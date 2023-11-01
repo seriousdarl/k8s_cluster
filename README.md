@@ -4,13 +4,6 @@
 
 ***Notice*** The initial blog post is here: [blog post](https://balaskas.gr/blog/2022/08/31/creating-a-kubernetes-cluster-with-kubeadm-on-ubuntu-2204-lts/)
 
-<!-- toc -->
-
-- [Prerequisites](#Prerequisites)
-- [Git Terraform Code for the kubernetes cluster](#Git-Terraform-Code-for-the-kubernetes-cluster)
-  - [Initilaze the working directory](#Initilaze-the-working-directory)
-  - [Ubuntu 22.04 Image](#Ubuntu-2204-Image)
-  - [Spawn the VMs](#Spawn-the-VMs)
 - [Control-Plane Node](#Control-Plane-Node)
   - [Ports on the control-plane node](#Ports-on-the-control-plane-node)
   - [Firewall on the control-plane node](#Firewall-on-the-control-plane-node)
