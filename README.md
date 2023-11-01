@@ -4,11 +4,6 @@
 
 ***Notice*** The initial blog post is here: [blog post](https://balaskas.gr/blog/2022/08/31/creating-a-kubernetes-cluster-with-kubeadm-on-ubuntu-2204-lts/)
 
-- [Control-Plane Node](#Control-Plane-Node)
-  - [Ports on the control-plane node](#Ports-on-the-control-plane-node)
-  - [Firewall on the control-plane node](#Firewall-on-the-control-plane-node)
-  - [Hosts file in the control-plane node](#Hosts-file-in-the-control-plane-node)
-    - [Updating your hosts file](#Updating-your-hosts-file)
   - [No Swap on the control-plane node](#No-Swap-on-the-control-plane-node)
   - [Kernel modules on the control-plane node](#Kernel-modules-on-the-control-plane-node)
   - [NeedRestart on the control-plane node](#NeedRestart-on-the-control-plane-node)
@@ -19,7 +14,6 @@
   - [Initializing the control-plane node](#Initializing-the-control-plane-node)
   - [Create user access config to the k8s control-plane node](#Create-user-access-config-to-the-k8s-control-plane-node)
   - [Verify the control-plane node](#Verify-the-control-plane-node)
-  - [Install an overlay network provider on the control-plane node](#Install-an-overlay-network-provider-on-the-control-plane-node)
   - [Verify CoreDNS is running on the control-plane node](#Verify-CoreDNS-is-running-on-the-control-plane-node)
 - [Worker Nodes](#Worker-Nodes)
   - [Ports on the worker nodes](#Ports-on-the-worker-nodes)
@@ -56,210 +50,6 @@
 - [That's it !](#Thats-it-)
 
 <!-- tocstop -->
-
-In this blog post, I'll try to share my personal notes on how to setup a kubernetes cluster with **kubeadm** on ubuntu 22.04 LTS Virtual Machines.
-
-I am going to use three (3) Virtual Machines in my local lab. My home lab is based on [libvirt](https://libvirt.org/) Qemu/KVM (Kernel-based Virtual Machine) and I run [Terraform](https://terraform.io) as the infrastructure provision tool.
-
-## Prerequisites
-
-- at least 3 Virtual Machines of Ubuntu 22.04 (one for control-plane, two for worker nodes)
-- 2GB (or more) of RAM on each Virtual Machine
-- 2 CPUs (or more) on each Virtual Machine
-- 20Gb of hard disk on each Virtual Machine
-- No SWAP partition/image/file on each Virtual Machine
-
-## Git Terraform Code for the kubernetes cluster
-
-I prefer to have a reproducible infrastructure, so I can very fast create and destroy my test lab. My preferable way of doing things is testing on each step, so I pretty much destroy everything, coping and pasting commands and keep on. I use terraform for the create the infrastructure. You can find the code for the entire kubernetes cluster here: [k8s cluster - Terraform code](https://github.com/ebal/k8s_cluster/tree/main/tf_libvirt).
-
-> If you do not use terraform, skip this step!
-
-You can `git clone` the repo to review and edit it according to your needs.
-
-```bash
-git clone https://github.com/ebal/k8s_cluster.git
-cd tf_libvirt
-
-```
-
-You will **need** to make appropriate changes. Open **Variables.tf** for that. The most important option to change, is the **User** option. Change it to your github username and it will download and setup the VMs with your public key, instead of mine!
-
-But pretty much, everything else should work out of the box. Change the **vmem** and **vcpu** settings to your needs.
-
-### Initilaze the working directory
-
-**Init** terraform before running the below shell script.
-This action will download in your local directory all the required teffarorm providers or modules.
-
-```bash
-terraform init
-
-```
-
-### Ubuntu 22.04 Image
-
-Before going forward with spawning the VMs, we need to have the ubuntu 22.04 image on our system, or change the code to get it from the internet.
-
-In **Variables.tf** terraform file, you will notice the below entries
-
-```bash
-# The image source of the VM
-# cloud_image = "https://cloud-images.ubuntu.com/jammy/current/focal-server-cloudimg-amd64.img"
-cloud_image = "../jammy-server-cloudimg-amd64.img"
-
-```
-
-If you do not want to download the Ubuntu 22.04 cloud server image then make the below change
-
-```bash
-# The image source of the VM
-cloud_image = "https://cloud-images.ubuntu.com/jammy/current/focal-server-cloudimg-amd64.img"
-#cloud_image = "../jammy-server-cloudimg-amd64.img"
-
-```
-
-otherwise you need to download it, in the upper directory, to speed things up
-
-```bash
-cd ../
-curl -sLO https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img
-cd -
-
-ls -l ../jammy-server-cloudimg-amd64.img
-
-```
-
-### Spawn the VMs
-
-We are ready to spawn our 3 VMs by running `terraform plan` & `terraform apply`
-
-```bash
-./start.sh
-
-```
-
-output should be something like:
-
-```bash
-...
-Apply complete! Resources: 16 added, 0 changed, 0 destroyed.
-
-Outputs:
-
-VMs = [
-  "192.168.122.169  k8scpnode",
-  "192.168.122.40   k8wrknode1",
-  "192.168.122.8    k8wrknode2",
-]
-
-```
-
-Verify that you have ssh access to the VMs
-
-eg.
-
-```bash
-ssh  -l ubuntu 192.168.122.169
-
-```
-
-replace the IP with what the output gave you.
-
-***DISCLAIMER*** if something failed, destroy everything with `./destroy.sh` to remove any garbages before run `./start.sh` again !!!
-
-## Control-Plane Node
-
-Let's us now start the configure of the k8s control-plane node.
-
-### Ports on the control-plane node
-
-Kubernetes runs a few services that needs to be accessable from the worker nodes.
-
-| Protocol | Direction | Port Range | Purpose                 | Used By              |
-|----------|-----------|------------|-------------------------|----------------------|
-| TCP      | Inbound   | 6443       | Kubernetes API server   | All                  |
-| TCP      | Inbound   | 2379-2380  | etcd server client API  | kube-apiserver, etcd |
-| TCP      | Inbound   | 10250      | Kubelet API             | Self, Control plane  |
-| TCP      | Inbound   | 10259      | kube-scheduler          | Self                 |
-| TCP      | Inbound   | 10257      | kube-controller-manager | Self                 |
-
-Although etcd ports are included in control plane section, you can also host your
-own etcd cluster externally or on custom ports.
-
-### Firewall on the control-plane node
-
-We need to open the necessary ports on the CP's (control-plane node) firewall.
-
-```bash
-sudo ufw allow 6443/tcp
-sudo ufw allow 2379:2380/tcp
-sudo ufw allow 10250/tcp
-sudo ufw allow 10259/tcp
-sudo ufw allow 10257/tcp
-
-#sudo ufw disable
-sudo ufw status
-
-```
-
-the output should be
-
-```bash
-To                         Action      From
---                         ------      ----
-22/tcp                     ALLOW       Anywhere
-6443/tcp                   ALLOW       Anywhere
-2379:2380/tcp              ALLOW       Anywhere
-10250/tcp                  ALLOW       Anywhere
-10259/tcp                  ALLOW       Anywhere
-10257/tcp                  ALLOW       Anywhere
-22/tcp (v6)                ALLOW       Anywhere (v6)
-6443/tcp (v6)              ALLOW       Anywhere (v6)
-2379:2380/tcp (v6)         ALLOW       Anywhere (v6)
-10250/tcp (v6)             ALLOW       Anywhere (v6)
-10259/tcp (v6)             ALLOW       Anywhere (v6)
-10257/tcp (v6)             ALLOW       Anywhere (v6)
-
-```
-
-### Hosts file in the control-plane node
-
-We need to update the `/etc/hosts` with the internal IP and hostname.
-This will help when it is time to join the worker nodes.
-
-```bash
-echo $(hostname -I) $(hostname) | sudo tee -a /etc/hosts
-
-```
-
-Just a reminder: we need to update the hosts file to all the VMs.
-To include all the VMs' IPs and hostnames.
-
-If you already know them, then your `/etc/hosts` file should look like this:
-
-```bash
-192.168.122.169  k8scpnode
-192.168.122.40   k8wrknode1
-192.168.122.8    k8wrknode2
-
-```
-
-replace the IPs to yours.
-
-#### Updating your hosts file
-
-if you already the IPs of your VMs, run the below script to ALL 3 VMs
-
-```bash
-sudo tee -a /etc/hosts <<EOF
-
-192.168.122.169  k8scpnode
-192.168.122.40   k8wrknode1
-192.168.122.8    k8wrknode2
-EOF
-
-```
 
 ### No Swap on the control-plane node
 
@@ -313,26 +103,6 @@ net.ipv4.ip_forward = 1
 EOF
 
 sudo sysctl --system
-
-```
-
-### NeedRestart on the control-plane node
-
-Before installing any software, we need to make a tiny change to **needrestart** program. This will help with the automation of installing packages and will stop asking -via dialog- if we would like to restart the services!
-
-#### temporarily
-
-```bash
-export -p NEEDRESTART_MODE="a"
-
-```
-
-#### permanently
-
-a more permanent way, is to update the configuration file
-
-```bash
-echo "\$nrconf{restart} = 'a';" | sudo tee -a /etc/needrestart/needrestart.conf
 
 ```
 
@@ -421,69 +191,14 @@ alias k="kubectl"
 
 ```
 
-### Verify the control-plane node
 
-Verify that the kubernets is running.
 
-That means we have a k8s cluster - but only the control-plane node is running.
 
-```bash
-kubectl cluster-info
-#kubectl cluster-info dump
 
-k get nodes -o wide; k get pods  -A -o wide
 
-```
 
-### Install an overlay network provider on the control-plane node
 
-As I mentioned above, in order to use the DNS and Service Discovery services in the kubernetes (CoreDNS) we need to install a Container Network Interface (CNI) based Pod network add-on so that your Pods can communicate with each other.
 
-We will use **[flannel](https://github.com/flannel-io/flannel)** as the simplest of them.
-
-```bash
-k apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
-
-```
-
-### Verify CoreDNS is running on the control-plane node
-
-Verify that the control-plane node is Up & Running and the control-plane pods (as coredns pods) are also running
-
-```bash
-k get nodes -o wide
-
-```
-
-```bash
-NAME        STATUS   ROLES           AGE   VERSION   INTERNAL-IP       EXTERNAL-IP   OS-IMAGE             KERNEL-VERSION      CONTAINER-RUNTIME
-k8scpnode   Ready    control-plane   54s   v1.25.0   192.168.122.169   <none>        Ubuntu 22.04.1 LTS   5.15.0-46-generic   containerd://1.6.8
-
-```
-
-```bash
-k get pods -A -o wide
-
-```
-
-```bash
-NAMESPACE    NAME                              READY STATUS  RESTARTS AGE IP              NODE      NOMINATED NODE READINESS GATES
-kube-flannel kube-flannel-ds-zqv2b             1/1   Running 0        36s 192.168.122.169 k8scpnode <none>         <none>
-kube-system  coredns-565d847f94-lg54q          1/1   Running 0        38s 10.244.0.2      k8scpnode <none>         <none>
-kube-system  coredns-565d847f94-ms8zk          1/1   Running 0        38s 10.244.0.3      k8scpnode <none>         <none>
-kube-system  etcd-k8scpnode                    1/1   Running 0        50s 192.168.122.169 k8scpnode <none>         <none>
-kube-system  kube-apiserver-k8scpnode          1/1   Running 0        50s 192.168.122.169 k8scpnode <none>         <none>
-kube-system  kube-controller-manager-k8scpnode 1/1   Running 0        50s 192.168.122.169 k8scpnode <none>         <none>
-kube-system  kube-proxy-pv7tj                  1/1   Running 0        39s 192.168.122.169 k8scpnode <none>         <none>
-kube-system  kube-scheduler-k8scpnode          1/1   Running 0        50s 192.168.122.169 k8scpnode <none>         <none>
-
-```
-
-<br>
-
-That's it with the control-plane node !
-
-<br>
 
 ## Worker Nodes
 
